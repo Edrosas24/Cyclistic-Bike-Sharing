@@ -1,0 +1,535 @@
+---
+title: "Cyclistic Case Study"
+author: "Edwin Rosas"
+output:
+  html_document:
+    df_print: paged
+    toc: true # table of content true
+    toc_float: TRUE
+    toc_depth: 5  # upto three depths of headings (specified by #, ## and ###)
+    number_sections: False  ## if you want number sections at each table header
+    theme: united  # many options for theme, this one is my favorite.
+    highlight: tango  # specifies the syntax highlighting style
+    #css: my.css   # you can add your custom css, should be in same folder
+---
+
+![](CyclisticLogo.PNG){width="101"}
+
+# Introduction
+
+Cyclistic is a bike sharing company based in Chicago, IL with more than 5,800 bicycles and 600 docking stations. Cyclistic users are more likely to ride for leisure, but about 30% use them to commute to work each day. Their business model consist of a yearly subscription based service that allows users unlimted access to available bikes, and Pay-as-you-Go services where users make a one time payment for a single-ride pass or full-day pass. We will refer to these users as Member and Casual riders.
+
+## Business Task
+
+Using SQL and R, we will explore whether member and casual riders have behavioral differences in how they use Cyclistic's services. We will then develop Marketing strategies based on those insights to to convert casual riders into annual members
+
+## Key Stakeholders
+
+-   **Lily Moreno:** The director of marketing and your manager
+-   **Cyclistic marketing analytics team:** A team of data analysts who are responsible for collecting, analyzing, and reporting data that helps guide Cyclistic marketing strategy
+-   **Cyclistic executive team:** The notoriously detail-oriented executive team will decide whether to approve the recommended marketing program.
+
+# Preparing our Data
+
+The Data for this study is from Divvy powered by Lyft. They are monthly datasets that include origin, destination, and timestamps for each trip. This data is publicly licensed and free to use under copyright law.
+
+**Dataset:** [Divvy Bike Share Data](https://divvy-tripdata.s3.amazonaws.com/index.html)
+
+**License**: Made available via [Data License Agreement](https://ride.divvybikes.com/data-license-agreement)
+
+**Time Frame of the Data:** March 2021 to February 2022
+
+## Quality of our Data
+
+-   **Reliability:** Measuring activity using the the app sign in and electronic docking stations, gives us access to precise and accurate trip data.
+-   **Originality:** This is first-party data provided by Divvy.
+-   **Comprehensive:** The data has sufficient information needed to answer the business question
+-   **Current:** The data is consistently updated monthly.
+-   **Cited**: The data has been vetted by Google
+
+## Our Working Data
+
+The data includes trip data origin, destination, geographic coordinates, and timestamps. It differentiates between members and casuals , and type of bike used.
+
+We import the following data into MS SQL Server Management Studio to merge:
+
+-   **X202104_divvy_tripdata,**
+-   **X202105_divvy_tripdata,**
+-   **X202106_divvy_tripdata,**
+-   **X202107_divvy_tripdata,**
+-   **X202108_divvy_tripdata,**
+-   **X202109_divvy_tripdata,**
+-   **X202110_divvy_tripdata,**
+-   **X202111_divvy_tripdata,**
+-   **X202112_divvy_tripdata,**
+-   **X202201_divvy_tripdata,**
+-   **X202202_divvy_tripdata**
+
+**SQL Merged Dataset:** [Import Code](https://github.com/Edrosas24/Cyclistic-Bike-Sharing/blob/main/TripDataProjQueryImport.sql)
+
+```{r include=FALSE}
+# install.packages("fpp3")
+# install.packages("readr")
+# install.packages("latex2exp")
+# install.packages("seasonal")
+# install.packages("feasts")
+# install.packages("broom")
+# install.packages("fable.prophet")
+# install.packages("Mcomp")
+# install.packages("openxlsx")
+
+
+library(fpp3)
+library(readr)
+library(latex2exp)
+library(seasonal)
+library(feasts)
+library(broom)
+library(fable)
+library(ggpubr)
+library(fable.prophet)
+library(Mcomp)
+library(openxlsx)
+library(readr)
+library(latex2exp)
+
+TripDataFullSQL = read_csv("CaseStudy1Data/SQLCombinedData/FullDataSQL.csv")
+TripDataFullSQL %>% spec()
+TripDataFull <- TripDataFullSQL
+```
+
+## Data Cleaning
+
+Issues with our Data
+
+-   We verify there are no alternate names for the member_casual column
+
+    -   In the the 2019 and 2020 data their were four possible labels for the column member_casual : "Member or Subscriber" and "Customer or casual"
+
+        -   Note: this is not a problem for our Data since our data is from March of 2021 to Feb of 2022.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Begin by seeing how many observations fall under each usertype
+
+# Distinct values of member_casual
+TripDataFull %>% select(member_casual) %>% distinct()
+
+# Table of member casual
+TripDataFull %>% select(member_casual) %>% table()
+# Data$member_casual %>% table()
+
+# Reassign desired values 
+TripDataFull <- TripDataFull %>% 
+  mutate(member_casual = recode(member_casual, # Recode Values 
+                                "Subscriber" = "member", 
+                                "Customer" = "casual"))
+# Not that Recode is "Thing we want changed" = "thing we want to change to" 
+
+# # Check if it worked
+# TripDataFull %>% select(member_casual) %>% distinct()
+```
+
+-   We create Date, Month, and Year fields for additional opportunities to aggregate data.
+-   We calculate Trip Duration in minutes and seconds
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Create new columns
+TripData_v1 <- TripDataFull %>% 
+  mutate(date = as_date(started_at),
+         day = day(started_at),
+         month = month(started_at),
+         MonthName = factor(month.abb[month],levels=month.abb),
+         year = year(started_at),                 
+         ride_len_min = difftime(ended_at, started_at, units = "mins") %>% as.numeric(),
+         ride_len_sec = difftime(ended_at, started_at, units = "secs") %>% as.numeric(),
+         day_of_week = wday(date),
+         dayName = factor(day_of_week,levels = 1:7,
+                          labels = c("Sunday", "Monday", "Tuesday", "Wednesday"
+                                     ,"Thursday", "Friday", "Saturday") ) 
+         
+  )
+      # dayName = weekdays(date) # Gets written day, but too slow bc it uses day of month
+
+```
+
+-   We filter out bike trips whose duration is less than zero minutes, and trips to and from headquarters
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v1 %>% filter(ride_len_sec <= 0) %>% count("Count of Trip Durantions <= 0") 
+
+# TripData_v1 %>% filter(start_station_name == "HQ QR")
+# TripData_v1 %>% filter(end_station_name %in% "HQ QR")
+```
+
+-   There should only be 2 type of bike types, classic and electric, so we omit the docked bike type.
+
+    -   Another reason to omit the docked bike type was because it was unique to casual members, which does not seem right since annual members should have access to all bikes.
+    -   Also they have an average ride duration of 81 minutes.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v1 %>% filter(rideable_type == "docked_bike") %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            Count = n())
+```
+
+## Combine the Filters
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Putting the filters together
+# TripData_v2 <- TripData_v1 %>% 
+#   filter(!rideable_type == "docked_bike") %>% 
+#   filter(!ride_len_sec <= 0) %>% 
+#   filter(!end_station_name == "HQ QR") %>% 
+#   filter(!start_station_name == "HQ QR") %>% count()
+
+TripData_v2 <- TripData_v1 %>% filter(
+  !rideable_type == "docked_bike",
+  !ride_len_sec <= 0, 
+  !end_station_name == "HQ QR",
+  !start_station_name == "HQ QR") 
+
+TripData_v2 %>% count("Total Count")
+```
+
+-   Final count for our working data.
+
+# Process the Data
+
+**TripDataFull:** [SQL Transformed Code](https://github.com/Edrosas24/Cyclistic-Bike-Sharing/blob/main/TripDataProjQueryNewCols.sql) read in R
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripDataFull %>% head()
+```
+
+**TripData_v1:** We added various field to make the data more granular.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v1 %>% head()
+```
+
+**TripData_v2:** Filtered for relevant data.
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% head()
+```
+
+# Data Analysis and Visualization
+
+We used R for our data analysis.
+
+**Data Analysis in SQL**: [Analysis Query](https://github.com/Edrosas24/Cyclistic-Bike-Sharing/blob/main/TripDataProjQueryDataAnalysis.sql)
+
+## Descriptive Statistics for Cyclistic Users in Minutes
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount = n(),
+            Percent = (100*n()/count(TripData_v2)) %>% round(2) %>% as.double(),  
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+-   The shortest ride being 1 second and longest being 900 hours seems extreme but we will continue with the analysis.
+
+## Member vs Casual
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Compare Members and Casual Users
+TripData_v2 %>% 
+  group_by(member_casual) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount = n(),
+            Percent = (100*n()/count(TripData_v2)) %>% round(2) %>% as.double(),
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+### Average Trip Duration
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(member_casual) %>% 
+  summarise(Mean_ride_len = mean(ride_len_sec),
+            Number_of_rides = n()) %>% 
+  ggplot(aes(x = member_casual, y = Mean_ride_len, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+```
+
+-   Casual users enjoy longer bike trips.
+
+### Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Lets Visualize the number of rides by rider type in the 1000s
+TripData_v2 %>% 
+  group_by(member_casual) %>% 
+  summarise(Number_of_rides = n()/1000) %>% 
+  ggplot(aes(x = member_casual, y = Number_of_rides, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+# If you want the heights of the bars to represent values in the data, use geom_col()
+```
+
+-   Casual user conduct less rides in general than member users.
+
+### Comparing Days of Week
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Compare days of Week
+TripData_v2 %>% 
+  group_by(dayName) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount= n(),
+            Percent = (100*n()/count(TripData_v2)) %>% round(2) %>% as.double(),
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+#### Day of Week: Average Trip Duration
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(member_casual, dayName) %>% 
+  summarise(Mean_ride_len = mean(ride_len_min)) %>% 
+  ggplot(aes(x = dayName, y = Mean_ride_len, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+```
+
+-   Casual users go on longer rides during the weekends.
+
+#### Day of Week: Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(member_casual, dayName) %>% 
+  summarise(Number_of_rides = n()/1000) %>% 
+  ggplot(aes(x = dayName, y = Number_of_rides, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+```
+
+-   Casual users conduct rides more on weekends, while annual members have a higher ride count during the work week.
+
+### Comparing Months of Year
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(MonthName) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount= n(),
+            Percent = (100*n()/count(TripData_v2)) %>% round(2) %>% as.double(),  
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+-   Approximately 85% of rides are made between May and October.
+
+#### Month of Year: Average Trip Duration
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Create a visualization for the average duration for members vs casual during the Month
+TripData_v2 %>% 
+  group_by(MonthName,member_casual) %>% 
+  summarise(Mean_ride_len = mean(ride_len_min)) %>% 
+  ggplot(aes(x = MonthName, y = Mean_ride_len, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+```
+
+-   Casual riders consistently ride longer than members. Especially during the Spring.
+
+#### Month of Year: Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Create a visualization for the number of rides for members vs casual during the months
+TripData_v2 %>% 
+  group_by(MonthName,member_casual) %>% 
+  summarise(Number_of_rides = n()/1000) %>% 
+  ggplot(aes(x = MonthName, y = Number_of_rides, fill = member_casual)) + 
+  geom_col(position = "dodge") + theme_minimal()
+```
+
+-   Peak month for casual rides was in July, while for annual members it was in August.
+
+### Comparing Type of Bike
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+# Compare days of Week
+TripData_v2 %>% 
+  group_by(rideable_type) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount= n(),
+            Percent = 100 *(n()/count(TripData_v2)) %>% round(2) %>% as.double(),
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+TripData_v1 %>% filter(!ride_len_min<=0) %>% 
+  group_by(rideable_type) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount= n(),
+            Percent = (100*n()/count(TripData_v1)) %>% round(2) %>% as.double(),
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+-   Note the difference the omission of the docked bike type made.
+
+#### Type of Bike: Average Trip Duration
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(member_casual, rideable_type) %>% 
+  summarise(Mean_ride_len = mean(ride_len_min)) %>% 
+  ggplot(aes(x = rideable_type, y = Mean_ride_len, fill = member_casual)) + 
+  geom_col() + theme_minimal()
+```
+
+-   Classic bikes have longer trip durations, more so among casual users
+
+#### Type of Bike: Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  group_by(member_casual, rideable_type) %>% 
+  summarise(Number_of_rides = n()/1000) %>% 
+  ggplot(aes(x = rideable_type, y = Number_of_rides, fill = member_casual)) + 
+  geom_col() + theme_minimal()
+```
+
+-   Classic bikes are the most popular choice among users. More so among members
+
+    -   Casual members prefer classic bikes by a factor of 2.
+    -   Classic bikes make up 75% of rides
+
+## Comparing Hours of Day
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  mutate(Hour= hour(started_at)) %>% 
+  group_by(Hour) %>% 
+  summarise(MeanDuration = mean(ride_len_min),
+            MedianDuration = median(ride_len_min),
+            RideCount= n(),
+            Percent = (100*n()/count(TripData_v2)) %>% round(2) %>% as.double(),  
+            MaxDuration = max(ride_len_min),
+            MinDuration = min(ride_len_min)
+            )
+```
+
+### Hour of Day: Average Ride Length
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  mutate(Hour= hour(started_at)) %>% 
+  group_by(Hour,member_casual) %>% 
+  summarise(Mean_ride_len = mean(ride_len_min)) %>% 
+  ggplot(aes(x = Hour, y = Mean_ride_len, col = member_casual)) + 
+  geom_line(position = "dodge", size=1) + theme_minimal()
+```
+
+-   From 5am-6am the **average ride duration** is at its lowest at 8 minutes, and from 1pm-3pm it is at is highest at approximately 20 minutes.
+
+### Hour of Day: Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% 
+  mutate(Hour= hour(started_at)) %>%
+  group_by(Hour,member_casual) %>% 
+  summarise(Number_of_rides = n()/1000) %>% 
+  ggplot(aes(x = Hour, y = Number_of_rides, col = member_casual)) + 
+  geom_line(position = "dodge", size=1) + theme_minimal()
+```
+
+-   **Number of rides** for casual users is at its lowest from 3am-4am, making up 0.6% of all rides, and at its highest at 5pm, with 10% of daily rides happening during this hour.
+
+## Popular Bike Hubs
+
+-   We **rank** the bike hubs from most popular to least popular.
+
+### Start Station
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% group_by(start_station_name) %>% 
+  summarise(TopStartStations = n()) %>% 
+  arrange(TopStartStations %>% desc()) %>% 
+  mutate(Rank = rank(-TopStartStations) %>% round(0) %>% as.integer())
+```
+
+#### Top 10 hubs to Start Rides: Member vs Casual Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+ TripData_v2 %>% group_by(member_casual, start_station_name) %>% 
+  summarise(StartStationRideCount = n()) %>% 
+  arrange(StartStationRideCount %>% desc() ) %>% 
+  mutate(Rank = rank(-StartStationRideCount) %>% round(0) %>% as.integer()) %>%  
+  filter(Rank == 1:10) %>%  
+  ggplot(aes(x=Rank, y=StartStationRideCount, fill = member_casual)) +
+  geom_col(position = "dodge") 
+```
+
+-   Streeter Dr & Grand Ave hub is the most popular **origin** hub among casual users. It is Located near the Chicago Children's Museum.
+
+### End Station
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% group_by(end_station_name) %>% 
+  summarise(EndStationRideCount = n()) %>% 
+  arrange(EndStationRideCount %>% desc()) %>% 
+  mutate(Rank = rank(-EndStationRideCount))
+```
+
+#### Top 10 hubs to End Rides: Member vs Casual Ride Count
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% group_by(member_casual, end_station_name) %>% 
+  summarise(EndStationRideCount = n()) %>% 
+  arrange(EndStationRideCount %>% desc() ) %>% 
+  mutate(Rank = rank(-EndStationRideCount) %>% round(0) %>% as.integer()) %>%  
+  filter(Rank == 1:10) %>%  
+  ggplot(aes(x=Rank, y=EndStationRideCount, fill = member_casual)) +
+  geom_col(position = "dodge") 
+```
+
+-   Streeter Dr & Grand Ave Hub is the most popular **destination** among casual users. It is Located near the Chicago Children's Museum.
+
+### Top 10 hubs for Casual Users: Comparing Days of Week
+
+```{r echo=FALSE, message=FALSE, warning=FALSE}
+TripData_v2 %>% filter(member_casual == "casual") %>% 
+  group_by(dayName, end_station_name) %>% 
+  summarise(EndStationRideCount = n()) %>% 
+  arrange(EndStationRideCount %>% desc() ) %>% 
+  mutate(Rank = rank(-EndStationRideCount) %>% round(0) %>% as.integer()) %>%  
+  filter(Rank == 1:10) %>%  
+  ggplot(aes(x=Rank, y=EndStationRideCount, fill = dayName)) +
+  geom_col(position = "dodge") 
+```
+
+-   For Casual users, we see this same pattern in ride count during the week. The only difference being the popularity of the Hub. Weekends see the most rides and Mid week sees the least. See 'Day of Week Ride' for the overall pattern.
+
+# Acting on our Findings
+
+**Appeal to the Casual User**
+
+In order to have a successful marketing campaign we must have an accurate profile of the Cyclistic Casual user. The Average Casual User will choose to **ride longer** and **more frequently** on a **Spring Weekend Afternoon** on a **Classic** Bike, with their origin and destination being the **Streeter Dr & Grand Ave Hub**. If we want to convert casual users to annual member subscribers, we must base our marketing strategy around their bike preference and preferred time to ride.
+
+**Partner with the Chicago Children's Museum**
+
+The most Popular origin and destination Hub is near this Museum. The partner initiative would include a discount or free ticket to the museum when casual members upgrade to an annual membership.
+
+**Partner with local Businesses**
+
+About 30% of Cyclisitc users, use the service to commute to work. Rather than selling annual memberships directly to the consumer, we would sell cyclistic services to their employers. In doing so employers can offer an alternate mode of transportation whenever an employee may be in need of a bike ride to work. We can further limit this type of employee provided membership to business hours.
+
+**Offer Discounts in Hub Hotspots using Geo Filters and Geo-Tags**
+
+Many social media platforms offer various options to promote businesses. We can take advantage of this by using their Geo services at the most popular hubs among Casual bike riders. In doing so we can set up links to the benefits of upgrading to an annual membership. We can also incentivise upgrading with a discount. The discount would require Casual users to Check-in on a hub using a particular social media platform.
